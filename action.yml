@@ -1,0 +1,75 @@
+name: Build Push Test
+description: Build an image, test via docker-compose, and push on success.
+inputs:
+  build-options:
+    description: |
+      Extra 'docker buildx build' options. For example, '--build-arg FOO=BAR'.
+    required: false
+  build-path:
+    default: .
+    description: Path for 'docker buildx build'.
+    required: false
+  compose-file:
+    default: docker-compose.test.yml
+    description: The compose file to test.
+    required: false
+  compose-project-name:
+    default: ${{ github.repository }}-${{ github.ref }}-${{ github.sha }}
+    description: Isolate the composition with a unique name.
+    required: false
+  compose-test-service:
+    description: The compose file service to monitor for test results.
+    default: tests
+    required: false
+  image-repo:
+    description: Image repository. E.g. 'registry.hub.docker.com/org/repo'.
+    required: true
+  image-tag:
+    default: sha-${{ github.sha }}
+    description: Image tag.
+    required: false
+runs:
+  using: "composite"
+  steps:
+    - name: Configure environment
+      run: |
+        echo "COMPOSE_FILE=${{ inputs.compose-file }}" >> $GITHUB_ENV
+        echo "COMPOSE_PROJECT_NAME=${{ inputs.compose-project-name }}" >> $GITHUB_ENV
+      shell: bash
+    - name: Show config
+      run: docker-compose config
+      shell: bash
+    - name: Build image
+      run: |
+        time docker buildx build \
+          --load \
+          --pull \
+          --tag ${{ inputs.image-repo }}:${{ inputs.image-tag }} \
+          ${{ inputs.build-options }} \
+          ${{ inputs.build-path}}
+      shell: bash
+    - name: Run tests
+      # Run tests and capture the exit code in a subshell so we can cleanup after and
+      # still return the captured exit code to fail the job.
+      run: |
+        time docker-compose up \
+          --abort-on-container-exit \
+          --renew-anon-volumes \
+          --exit-code-from \
+          ${{ inputs.compose-test-service }}
+        echo "EXIT_CODE=${?}" >> $GITHUB_ENV
+      shell: bash
+    - name: Push image
+      # if: env.EXIT_CODE == 0  # Not yet supported
+      run: |
+        [[ ! ${{ env.EXIT_CODE }} -eq 0 ]] \
+          && time docker push ${{ inputs.image-repo }}:${{ inputs.image-tag }}
+      shell: bash
+    - name: Cleanup
+      run: |
+        docker-compose down --volumes
+        docker rmi ${{ inputs.image-repo }}:${{ inputs.image-tag }}
+      shell: bash
+    - name: Return test service exit code
+      run: exit ${{ env.EXIT_CODE }}
+      shell: bash
